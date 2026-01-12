@@ -156,9 +156,9 @@ export const useGatewayStore = create<GatewayStore>()(
 
       const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
-      const updateUplinkStats = () => {
+      const updateUplinkStats = (force = false) => {
         const now = nowMs()
-        if (now - uplink.lastStatsAtMs < 200) return
+        if (!force && now - uplink.lastStatsAtMs < 200) return
         uplink.lastStatsAtMs = now
 
         const ws = get()._ws
@@ -178,7 +178,7 @@ export const useGatewayStore = create<GatewayStore>()(
           uplink.pacerId = null
         }
         uplink.queue.length = 0
-        updateUplinkStats()
+        updateUplinkStats(true)
       }
 
       const startUplinkPacer = () => {
@@ -206,12 +206,18 @@ export const useGatewayStore = create<GatewayStore>()(
             return
           }
 
-          const next = uplink.queue.shift()
-          if (!next) return
-          try {
-            ws.send(next)
-          } catch {
-            uplink.droppedTotal += 1
+          // Catch up quickly after main-thread stalls by sending a small burst if possible.
+          // This avoids dropping frames on otherwise good networks when encoder output comes in bursts.
+          let sent = 0
+          while (uplink.queue.length > 0 && sent < 5 && ws.bufferedAmount <= maxBuffered) {
+            const next = uplink.queue.shift()
+            if (!next) break
+            try {
+              ws.send(next)
+            } catch {
+              uplink.droppedTotal += 1
+            }
+            sent += 1
           }
           updateUplinkStats()
         }, 20)
@@ -728,8 +734,18 @@ export const useGatewayStore = create<GatewayStore>()(
           return
         }
 
-        // If the WS send buffer is already too large, drop stale queued frames and keep only the latest.
+        // Fast path: on healthy connections, send immediately (no pacing/queue).
+        // We only enter pacing mode once we observe backpressure.
         const maxBuffered = get().uplinkMaxBufferedAmountBytes
+        if (uplink.queue.length === 0 && uplink.pacerId == null && ws.bufferedAmount <= maxBuffered) {
+          try {
+            ws.send(buffer)
+          } catch {}
+          updateUplinkStats()
+          return
+        }
+
+        // If the WS send buffer is already too large, drop stale queued frames and keep only the latest.
         if (ws.bufferedAmount > maxBuffered) {
           uplink.droppedTotal += uplink.queue.length
           uplink.queue.length = 0

@@ -11,6 +11,9 @@ type Metrics = {
   wsRttMs?: number
   serverRttMs?: number
   wsBufferedAmountBytes?: number
+  uplinkClientBufferedAmountBytes?: number
+  uplinkQueueFrames?: number
+  uplinkDroppedFramesTotal?: number
   voiceDownlinkFramesTotal?: number
   voiceDownlinkBytesTotal?: number
   voiceDownlinkDroppedFramesTotal?: number
@@ -324,6 +327,16 @@ export function MetricsPanel({ metrics, playbackStats, captureStats, onClose }: 
                 label="总字节"
                 value={metrics.voiceUplinkBytesTotal != null ? (metrics.voiceUplinkBytesTotal / 1024).toFixed(1) : '-'}
                 unit="KB"
+              />
+              <MetricCard
+                label="上行队列"
+                value={metrics.uplinkQueueFrames ?? 0}
+              />
+              <MetricCard
+                label="上行丢帧"
+                value={metrics.uplinkDroppedFramesTotal ?? 0}
+                icon={AlertTriangle}
+                status={(metrics.uplinkDroppedFramesTotal ?? 0) > 0 ? 'warn' : 'good'}
               />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

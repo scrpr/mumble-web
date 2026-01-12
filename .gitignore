@@ -62,3 +62,4 @@ apps/gateway/dist
 
 .ace-tool/
 mumble-server/
+apps/gateway/config/servers.json

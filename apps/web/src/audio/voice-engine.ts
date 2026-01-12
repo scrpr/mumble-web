@@ -126,7 +126,7 @@ export class VoiceEngine {
     })
   }
 
-  async enableMic(): Promise<void> {
+  async enableMic(options?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean }): Promise<void> {
     if (this._micEnabled) return
     await this.enableAudio()
 
@@ -135,9 +135,10 @@ export class VoiceEngine {
 
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+        echoCancellation: options?.echoCancellation ?? true,
+        noiseSuppression: options?.noiseSuppression ?? true,
+        autoGainControl: options?.autoGainControl ?? true,
+        channelCount: 1
       }
     })
 

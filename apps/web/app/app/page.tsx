@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
@@ -8,6 +9,7 @@ import { useGatewayStore } from '../../src/state/gateway-store'
 import { cn } from '../../src/ui/cn'
 import { VoiceEngine } from '../../src/audio/voice-engine'
 import { canUseWebCodecsOpus, createWebCodecsOpusDecoder, createWebCodecsOpusEncoder } from '../../src/audio/webcodecs-opus'
+import { Rnnoise, type DenoiseState } from '@shiguredo/rnnoise-wasm'
 import { Mic, MicOff, Headphones, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, Activity, Send, BarChart3 } from 'lucide-react'
 import { MetricsPanel } from '../../components/ui/metrics-panel'
 
@@ -35,6 +37,11 @@ export default function AppPage() {
     sendMicEnd,
     voiceMode,
     vadThreshold,
+    opusBitrate,
+    micEchoCancellation,
+    micNoiseSuppression,
+    micAutoGainControl,
+    rnnoiseEnabled,
     setVoiceMode,
     setVadThreshold
   } = useGatewayStore()
@@ -48,11 +55,45 @@ export default function AppPage() {
   const [playbackStats, setPlaybackStats] = useState<{ totalQueuedMs: number; maxQueuedMs: number; streams: number } | null>(null)
   const [captureStats, setCaptureStats] = useState<{ rms: number; sending: boolean } | null>(null)
   const voiceRef = useRef<VoiceEngine | null>(null)
+  const rnnoiseRef = useRef<{ state: DenoiseState; frameSize: number; buf: Float32Array } | null>(null)
 
   // Initialize and clean up voice engine
   useEffect(() => {
     init()
   }, [init])
+
+  useEffect(() => {
+    if (!rnnoiseEnabled) {
+      rnnoiseRef.current?.state.destroy()
+      rnnoiseRef.current = null
+      return
+    }
+
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const rnnoise = await Rnnoise.load()
+        if (cancelled) return
+        const state = rnnoise.createDenoiseState()
+        if (cancelled) {
+          state.destroy()
+          return
+        }
+        rnnoiseRef.current?.state.destroy()
+        rnnoiseRef.current = { state, frameSize: rnnoise.frameSize, buf: new Float32Array(rnnoise.frameSize) }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[voice] failed to init RNNoise: ${String(e)}`)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      rnnoiseRef.current?.state.destroy()
+      rnnoiseRef.current = null
+    }
+  }, [rnnoiseEnabled])
 
   useEffect(() => {
     const decoders = new Map<number, ReturnType<typeof createWebCodecsOpusDecoder>>()
@@ -63,7 +104,7 @@ export default function AppPage() {
         encoder = createWebCodecsOpusEncoder({
           sampleRate: 48000,
           channels: 1,
-          bitrate: 24000,
+          bitrate: opusBitrate,
           onOpus: (opus) => sendMicOpus(opus, { target: 0 })
         })
       } catch (e) {
@@ -74,6 +115,36 @@ export default function AppPage() {
     const engine = new VoiceEngine({
       onMicPcm: (pcm, sampleRate) => {
         if (sampleRate !== 48000) return
+
+        const rn = rnnoiseRef.current
+        if (rn) {
+          try {
+            const scale = 32768
+            const invScale = 1 / scale
+            const { state, frameSize, buf } = rn
+
+            for (let offset = 0; offset + frameSize <= pcm.length; offset += frameSize) {
+              buf.set(pcm.subarray(offset, offset + frameSize))
+
+              // RNNoise assumes 16-bit PCM amplitude.
+              for (let i = 0; i < frameSize; i++) {
+                const v = (buf[i] ?? 0) * scale
+                buf[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v
+              }
+
+              state.processFrame(buf)
+
+              for (let i = 0; i < frameSize; i++) {
+                const v = (buf[i] ?? 0) * invScale
+                pcm[offset + i] = v > 1 ? 1 : v < -1 ? -1 : v
+              }
+            }
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn(`[voice] rnnoise process failed: ${String(e)}`)
+          }
+        }
+
         encoder?.encode(pcm)
       },
       onMicEnd: () => {
@@ -123,7 +194,7 @@ export default function AppPage() {
       encoder?.close()
       for (const dec of decoders.values()) dec.close()
     }
-  }, [sendMicEnd, sendMicOpus, setVoiceSink])
+  }, [sendMicEnd, sendMicOpus, setVoiceSink, opusBitrate])
 
   useEffect(() => {
     if (status !== 'connected') {
@@ -236,6 +307,11 @@ export default function AppPage() {
             className="text-muted-foreground hover:text-foreground"
           >
             <BarChart3 className="h-4 w-4" />
+          </Button>
+          <Button asChild variant="ghost" size="icon" title="Settings" className="text-muted-foreground hover:text-foreground">
+            <Link href="/settings">
+              <Settings className="h-4 w-4" />
+            </Link>
           </Button>
           <Button variant="ghost" size="icon" onClick={() => disconnect()} title="Disconnect">
             <LogOut className="h-4 w-4 text-muted-foreground hover:text-destructive" />
@@ -428,7 +504,11 @@ export default function AppPage() {
                   setMicEnabled(false)
                 } else {
                   try {
-                    await voiceRef.current?.enableMic()
+                    await voiceRef.current?.enableMic({
+                      echoCancellation: micEchoCancellation,
+                      noiseSuppression: micNoiseSuppression,
+                      autoGainControl: micAutoGainControl
+                    })
                     setMicEnabled(true)
                   } catch (e) {
                     alert(`Failed to access microphone: ${e}`)

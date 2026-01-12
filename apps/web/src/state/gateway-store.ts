@@ -28,6 +28,9 @@ type Metrics = {
   wsRttMs?: number
   serverRttMs?: number
   wsBufferedAmountBytes?: number
+  uplinkClientBufferedAmountBytes?: number
+  uplinkQueueFrames?: number
+  uplinkDroppedFramesTotal?: number
   voiceDownlinkFramesTotal?: number
   voiceDownlinkBytesTotal?: number
   voiceDownlinkDroppedFramesTotal?: number
@@ -76,6 +79,15 @@ type GatewayStore = {
   // Audio settings (persisted)
   voiceMode: VoiceMode
   vadThreshold: number
+  opusBitrate: number
+  uplinkCongestionControlEnabled: boolean
+  uplinkMaxBufferedAmountBytes: number
+
+  // Mic settings (persisted)
+  micEchoCancellation: boolean
+  micNoiseSuppression: boolean
+  micAutoGainControl: boolean
+  rnnoiseEnabled: boolean
 
   _ws: WebSocket | null
   _pingInterval: number | null
@@ -99,6 +111,13 @@ type GatewayStore = {
   sendTextToSelectedChannel: (message: string) => void
   setVoiceMode: (mode: VoiceMode) => void
   setVadThreshold: (val: number) => void
+  setOpusBitrate: (bitrate: number) => void
+  setUplinkCongestionControlEnabled: (enabled: boolean) => void
+  setUplinkMaxBufferedAmountBytes: (bytes: number) => void
+  setMicEchoCancellation: (val: boolean) => void
+  setMicNoiseSuppression: (val: boolean) => void
+  setMicAutoGainControl: (val: boolean) => void
+  setRnnoiseEnabled: (val: boolean) => void
 }
 
 function getGatewayUrl(): string {
@@ -127,7 +146,78 @@ function safeParseJson(text: string): any | null {
 
 export const useGatewayStore = create<GatewayStore>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      const uplink = {
+        queue: [] as Array<ArrayBuffer>,
+        pacerId: null as number | null,
+        droppedTotal: 0,
+        lastStatsAtMs: 0,
+      }
+
+      const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+
+      const updateUplinkStats = () => {
+        const now = nowMs()
+        if (now - uplink.lastStatsAtMs < 200) return
+        uplink.lastStatsAtMs = now
+
+        const ws = get()._ws
+        set((s) => ({
+          metrics: {
+            ...s.metrics,
+            uplinkQueueFrames: uplink.queue.length,
+            uplinkDroppedFramesTotal: uplink.droppedTotal,
+            uplinkClientBufferedAmountBytes: ws && ws.readyState === WebSocket.OPEN ? ws.bufferedAmount : 0,
+          },
+        }))
+      }
+
+      const stopUplinkPacer = () => {
+        if (uplink.pacerId != null) {
+          window.clearInterval(uplink.pacerId)
+          uplink.pacerId = null
+        }
+        uplink.queue.length = 0
+        updateUplinkStats()
+      }
+
+      const startUplinkPacer = () => {
+        if (uplink.pacerId != null) return
+        uplink.pacerId = window.setInterval(() => {
+          const ws = get()._ws
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            stopUplinkPacer()
+            return
+          }
+
+          if (uplink.queue.length === 0) {
+            stopUplinkPacer()
+            return
+          }
+
+          const maxBuffered = get().uplinkMaxBufferedAmountBytes
+          if (ws.bufferedAmount > maxBuffered) {
+            // Network is congested; keep only the most recent frame to stay realtime.
+            if (uplink.queue.length > 1) {
+              uplink.droppedTotal += uplink.queue.length - 1
+              uplink.queue.splice(0, uplink.queue.length - 1)
+            }
+            updateUplinkStats()
+            return
+          }
+
+          const next = uplink.queue.shift()
+          if (!next) return
+          try {
+            ws.send(next)
+          } catch {
+            uplink.droppedTotal += 1
+          }
+          updateUplinkStats()
+        }, 20)
+      }
+
+      return {
       gatewayStatus: 'closed',
       status: 'idle',
       connectError: null,
@@ -145,6 +235,14 @@ export const useGatewayStore = create<GatewayStore>()(
 
       voiceMode: 'vad',
       vadThreshold: 0.02,
+      opusBitrate: 24000,
+      uplinkCongestionControlEnabled: true,
+      uplinkMaxBufferedAmountBytes: 256 * 1024,
+
+      micEchoCancellation: true,
+      micNoiseSuppression: true,
+      micAutoGainControl: true,
+      rnnoiseEnabled: false,
 
       _ws: null,
       _pingInterval: null,
@@ -515,6 +613,8 @@ export const useGatewayStore = create<GatewayStore>()(
         }
 
         ws.onclose = () => {
+          stopUplinkPacer()
+
           const pingId = get()._pingInterval
           if (pingId) window.clearInterval(pingId)
           if (voiceStatsInterval) window.clearInterval(voiceStatsInterval)
@@ -553,6 +653,8 @@ export const useGatewayStore = create<GatewayStore>()(
       },
 
       disconnect: () => {
+        stopUplinkPacer()
+
         const reconnectTimeout = get()._reconnectTimeout
         if (reconnectTimeout) window.clearTimeout(reconnectTimeout)
         const sessionReconnectTimeout = get()._sessionReconnectTimeout
@@ -618,14 +720,47 @@ export const useGatewayStore = create<GatewayStore>()(
         view.setUint8(2, 0)
         view.setUint8(3, 0)
         new Uint8Array(buffer, headerBytes).set(opus)
-        try {
-          ws.send(buffer)
-        } catch {}
+
+        if (!get().uplinkCongestionControlEnabled) {
+          try {
+            ws.send(buffer)
+          } catch {}
+          return
+        }
+
+        // If the WS send buffer is already too large, drop stale queued frames and keep only the latest.
+        const maxBuffered = get().uplinkMaxBufferedAmountBytes
+        if (ws.bufferedAmount > maxBuffered) {
+          uplink.droppedTotal += uplink.queue.length
+          uplink.queue.length = 0
+          uplink.queue.push(buffer)
+          startUplinkPacer()
+          updateUplinkStats()
+          return
+        }
+
+        uplink.queue.push(buffer)
+        // Bound in-memory queue (realtime > completeness).
+        if (uplink.queue.length > 10) {
+          const drop = uplink.queue.length - 10
+          uplink.droppedTotal += drop
+          uplink.queue.splice(0, drop)
+        }
+        startUplinkPacer()
+        updateUplinkStats()
       },
 
       sendMicEnd: () => {
         const ws = get()._ws
         if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+        if (get().uplinkCongestionControlEnabled) {
+          // Drop any unsent frames so "end" isn't delayed behind stale audio.
+          uplink.droppedTotal += uplink.queue.length
+          uplink.queue.length = 0
+          stopUplinkPacer()
+        }
+
         try {
           ws.send(new Uint8Array([0x03]).buffer)
         } catch {}
@@ -661,7 +796,15 @@ export const useGatewayStore = create<GatewayStore>()(
 
       setVoiceMode: (mode) => set({ voiceMode: mode }),
       setVadThreshold: (val) => set({ vadThreshold: val }),
-    }),
+      setOpusBitrate: (bitrate) => set({ opusBitrate: bitrate }),
+      setUplinkCongestionControlEnabled: (enabled) => set({ uplinkCongestionControlEnabled: enabled }),
+      setUplinkMaxBufferedAmountBytes: (bytes) => set({ uplinkMaxBufferedAmountBytes: bytes }),
+      setMicEchoCancellation: (val) => set({ micEchoCancellation: val }),
+      setMicNoiseSuppression: (val) => set({ micNoiseSuppression: val }),
+      setMicAutoGainControl: (val) => set({ micAutoGainControl: val }),
+      setRnnoiseEnabled: (val) => set({ rnnoiseEnabled: val }),
+    }
+    },
     {
       name: 'mumble-gateway-storage',
       storage: createJSONStorage(() => localStorage),
@@ -670,6 +813,13 @@ export const useGatewayStore = create<GatewayStore>()(
         _lastConnectArgs: state._lastConnectArgs,
         voiceMode: state.voiceMode,
         vadThreshold: state.vadThreshold,
+        opusBitrate: state.opusBitrate,
+        uplinkCongestionControlEnabled: state.uplinkCongestionControlEnabled,
+        uplinkMaxBufferedAmountBytes: state.uplinkMaxBufferedAmountBytes,
+        micEchoCancellation: state.micEchoCancellation,
+        micNoiseSuppression: state.micNoiseSuppression,
+        micAutoGainControl: state.micAutoGainControl,
+        rnnoiseEnabled: state.rnnoiseEnabled,
       }),
     }
   )

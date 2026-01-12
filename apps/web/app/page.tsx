@@ -29,6 +29,12 @@ export default function ConnectPage() {
     }
   }, [status, router])
 
+  useEffect(() => {
+    if (!serverId && servers.length > 0) {
+      setServerId(servers[0].id)
+    }
+  }, [servers, serverId])
+
   const canConnect = useMemo(() => {
     return Boolean(serverId && username && status !== 'connecting')
   }, [serverId, username, status])

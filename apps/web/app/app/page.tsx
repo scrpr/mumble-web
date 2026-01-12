@@ -8,7 +8,8 @@ import { useGatewayStore } from '../../src/state/gateway-store'
 import { cn } from '../../src/ui/cn'
 import { VoiceEngine } from '../../src/audio/voice-engine'
 import { canUseWebCodecsOpus, createWebCodecsOpusDecoder, createWebCodecsOpusEncoder } from '../../src/audio/webcodecs-opus'
-import { Mic, MicOff, Headphones, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, Activity, Send } from 'lucide-react'
+import { Mic, MicOff, Headphones, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, Activity, Send, BarChart3 } from 'lucide-react'
+import { MetricsPanel } from '../../components/ui/metrics-panel'
 
 export default function AppPage() {
   const {
@@ -43,6 +44,7 @@ export default function AppPage() {
   const [message, setMessage] = useState('')
   const [audioReady, setAudioReady] = useState(false)
   const [micEnabled, setMicEnabled] = useState(false)
+  const [showMetricsPanel, setShowMetricsPanel] = useState(false)
   const [playbackStats, setPlaybackStats] = useState<{ totalQueuedMs: number; maxQueuedMs: number; streams: number } | null>(null)
   const [captureStats, setCaptureStats] = useState<{ rms: number; sending: boolean } | null>(null)
   const voiceRef = useRef<VoiceEngine | null>(null)
@@ -216,12 +218,25 @@ export default function AppPage() {
           </div>
           <h1 className="font-semibold text-sm">Mumble Web</h1>
           <div className="mx-2 h-4 w-[1px] bg-border" />
-          <p className="text-xs text-muted-foreground flex items-center gap-3">
+          <p
+            className="text-xs text-muted-foreground flex items-center gap-3 cursor-pointer hover:text-foreground transition-colors"
+            onClick={() => setShowMetricsPanel(true)}
+            title="点击查看详细指标"
+          >
             <span className="flex items-center gap-1"><Activity className="h-3 w-3" /> {metrics.wsRttMs != null ? Math.round(metrics.wsRttMs) : '-'}ms</span>
             <span className="hidden sm:inline">Server: {metrics.serverRttMs != null ? Math.round(metrics.serverRttMs) : '-'}ms</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setShowMetricsPanel(true)}
+            title="Connection Metrics"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <BarChart3 className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" size="icon" onClick={() => disconnect()} title="Disconnect">
             <LogOut className="h-4 w-4 text-muted-foreground hover:text-destructive" />
           </Button>
@@ -484,6 +499,16 @@ export default function AppPage() {
           </div>
         </div>
       </footer>
+
+      {/* Metrics Panel Modal */}
+      {showMetricsPanel && (
+        <MetricsPanel
+          metrics={metrics}
+          playbackStats={playbackStats}
+          captureStats={captureStats}
+          onClose={() => setShowMetricsPanel(false)}
+        />
+      )}
     </div>
   )
 }

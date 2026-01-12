@@ -290,7 +290,7 @@ export const useGatewayStore = create<GatewayStore>()(
           // Start ping for ws RTT measurement
           const id = window.setInterval(() => {
             try {
-              ws.send(JSON.stringify({ type: 'ping', clientTimeMs: Date.now() }))
+              ws.send(JSON.stringify({ type: 'ping', clientTimeMs: nowMs() }))
             } catch {}
           }, 2000)
           set({ _pingInterval: id })
@@ -411,6 +411,19 @@ export const useGatewayStore = create<GatewayStore>()(
           switch (msg.type) {
             case 'serverList': {
               set({ servers: msg.servers ?? [] })
+              return
+            }
+            case 'pong': {
+              const sent = typeof msg.clientTimeMs === 'number' ? msg.clientTimeMs : null
+              if (sent == null) return
+              const rttMs = nowMs() - sent
+              if (!Number.isFinite(rttMs)) return
+              set((s) => ({
+                metrics: {
+                  ...s.metrics,
+                  wsRttMs: Math.max(0, rttMs),
+                },
+              }))
               return
             }
             case 'connected': {
@@ -576,7 +589,6 @@ export const useGatewayStore = create<GatewayStore>()(
               set((s) => ({
                 metrics: {
                   ...s.metrics,
-                  wsRttMs: msg.wsRttMs,
                   serverRttMs: msg.serverRttMs,
                   wsBufferedAmountBytes: msg.wsBufferedAmountBytes,
                   voiceDownlinkFramesTotal: msg.voiceDownlinkFramesTotal,

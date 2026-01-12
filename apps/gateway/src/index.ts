@@ -20,7 +20,6 @@ type Session = {
   mumbleUnsubscribers: Array<() => void>
   metrics: {
     lastServerRttMs?: number
-    lastWsRttMs?: number
     voiceDownlinkFrames: number
     voiceDownlinkBytes: number
     voiceDownlinkDroppedFrames: number
@@ -82,7 +81,6 @@ function sendError(ws: WebSocket, code: string, message: string, details?: unkno
 function sendMetrics(ws: WebSocket, session: Session) {
   const now = Date.now()
   const msg: GatewayServerMessage = { type: 'metrics' }
-  if (session.metrics.lastWsRttMs != null) msg.wsRttMs = session.metrics.lastWsRttMs
   if (session.metrics.lastServerRttMs != null) msg.serverRttMs = session.metrics.lastServerRttMs
   msg.wsBufferedAmountBytes = ws.bufferedAmount
 
@@ -258,8 +256,6 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'ping') {
       const now = Date.now()
-      const rtt = now - msg.clientTimeMs
-      if (session) session.metrics.lastWsRttMs = rtt
       sendJson(ws, { type: 'pong', clientTimeMs: msg.clientTimeMs, serverTimeMs: now })
       if (session) {
         sendMetrics(ws, session)

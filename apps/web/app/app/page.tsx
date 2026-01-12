@@ -12,6 +12,7 @@ import { canUseWebCodecsOpus, createWebCodecsOpusDecoder, createWebCodecsOpusEnc
 import { Rnnoise, type DenoiseState } from '@shiguredo/rnnoise-wasm'
 import { Mic, MicOff, Headphones, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, Activity, Send, BarChart3 } from 'lucide-react'
 import { MetricsPanel } from '../../components/ui/metrics-panel'
+import { SettingsDialog } from '../../components/ui/settings-dialog'
 
 export default function AppPage() {
   const {
@@ -52,6 +53,7 @@ export default function AppPage() {
   const [audioReady, setAudioReady] = useState(false)
   const [micEnabled, setMicEnabled] = useState(false)
   const [showMetricsPanel, setShowMetricsPanel] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [playbackStats, setPlaybackStats] = useState<{ totalQueuedMs: number; maxQueuedMs: number; streams: number } | null>(null)
   const [captureStats, setCaptureStats] = useState<{ rms: number; sending: boolean } | null>(null)
   const voiceRef = useRef<VoiceEngine | null>(null)
@@ -71,22 +73,22 @@ export default function AppPage() {
 
     let cancelled = false
 
-    ;(async () => {
-      try {
-        const rnnoise = await Rnnoise.load()
-        if (cancelled) return
-        const state = rnnoise.createDenoiseState()
-        if (cancelled) {
-          state.destroy()
-          return
+      ; (async () => {
+        try {
+          const rnnoise = await Rnnoise.load()
+          if (cancelled) return
+          const state = rnnoise.createDenoiseState()
+          if (cancelled) {
+            state.destroy()
+            return
+          }
+          rnnoiseRef.current?.state.destroy()
+          rnnoiseRef.current = { state, frameSize: rnnoise.frameSize, buf: new Float32Array(rnnoise.frameSize) }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn(`[voice] failed to init RNNoise: ${String(e)}`)
         }
-        rnnoiseRef.current?.state.destroy()
-        rnnoiseRef.current = { state, frameSize: rnnoise.frameSize, buf: new Float32Array(rnnoise.frameSize) }
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn(`[voice] failed to init RNNoise: ${String(e)}`)
-      }
-    })()
+      })()
 
     return () => {
       cancelled = true
@@ -308,10 +310,8 @@ export default function AppPage() {
           >
             <BarChart3 className="h-4 w-4" />
           </Button>
-          <Button asChild variant="ghost" size="icon" title="Settings" className="text-muted-foreground hover:text-foreground">
-            <Link href="/settings">
-              <Settings className="h-4 w-4" />
-            </Link>
+          <Button variant="ghost" size="icon" title="Settings" onClick={() => setShowSettings(true)} className="text-muted-foreground hover:text-foreground">
+            <Settings className="h-4 w-4" />
           </Button>
           <Button variant="ghost" size="icon" onClick={() => disconnect()} title="Disconnect">
             <LogOut className="h-4 w-4 text-muted-foreground hover:text-destructive" />
@@ -581,14 +581,19 @@ export default function AppPage() {
       </footer>
 
       {/* Metrics Panel Modal */}
-      {showMetricsPanel && (
-        <MetricsPanel
-          metrics={metrics}
-          playbackStats={playbackStats}
-          captureStats={captureStats}
-          onClose={() => setShowMetricsPanel(false)}
-        />
-      )}
+      <MetricsPanel
+        metrics={metrics}
+        playbackStats={playbackStats}
+        captureStats={captureStats}
+        open={showMetricsPanel}
+        onOpenChange={setShowMetricsPanel}
+      />
+
+      {/* Settings Modal */}
+      <SettingsDialog
+        open={showSettings}
+        onOpenChange={setShowSettings}
+      />
     </div>
   )
 }

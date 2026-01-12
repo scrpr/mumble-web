@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './card'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './dialog'
 import { LineChart } from './line-chart'
 import { Button } from './button'
 import { X, Activity, ArrowDown, ArrowUp, Wifi, Gauge, AlertTriangle } from 'lucide-react'
@@ -44,12 +45,13 @@ type MetricsPanelProps = {
   metrics: Metrics
   playbackStats: PlaybackStats | null
   captureStats: CaptureStats | null
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }
 
 const MAX_HISTORY = 120
 
-function useMetricsHistory(metrics: Metrics, playbackStats: PlaybackStats | null, captureStats: CaptureStats | null) {
+function useMetricsHistory(metrics: Metrics, playbackStats: PlaybackStats | null, captureStats: CaptureStats | null, enabled: boolean) {
   const [history, setHistory] = useState<{
     wsRtt: number[]
     serverRtt: number[]
@@ -72,6 +74,7 @@ function useMetricsHistory(metrics: Metrics, playbackStats: PlaybackStats | null
 
   useEffect(() => {
     const now = Date.now()
+    if (!enabled) return
     // 每 500ms 更新一次历史记录
     if (now - lastUpdateRef.current < 500) return
     lastUpdateRef.current = now
@@ -85,7 +88,7 @@ function useMetricsHistory(metrics: Metrics, playbackStats: PlaybackStats | null
       buffer: [...prev.buffer, playbackStats?.totalQueuedMs ?? 0].slice(-MAX_HISTORY),
       micLevel: [...prev.micLevel, (captureStats?.rms ?? 0) * 100].slice(-MAX_HISTORY)
     }))
-  }, [metrics, playbackStats, captureStats])
+  }, [metrics, playbackStats, captureStats, enabled])
 
   return history
 }
@@ -140,22 +143,19 @@ function getJitterStatus(jitter: number | undefined): 'good' | 'warn' | 'bad' | 
   return 'bad'
 }
 
-export function MetricsPanel({ metrics, playbackStats, captureStats, onClose }: MetricsPanelProps) {
-  const history = useMetricsHistory(metrics, playbackStats, captureStats)
+export function MetricsPanel({ metrics, playbackStats, captureStats, open, onOpenChange }: MetricsPanelProps) {
+  const history = useMetricsHistory(metrics, playbackStats, captureStats, open)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-      <Card className="w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 border-b shrink-0">
-          <CardTitle className="flex items-center gap-2 text-lg">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col p-0 gap-0">
+        <DialogHeader className="p-6 pb-2 border-b">
+          <DialogTitle className="flex items-center gap-2 text-lg">
             <Activity className="h-5 w-5 text-primary" />
             连接质量监控
-          </CardTitle>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
-        </CardHeader>
-        <CardContent className="p-4 overflow-y-auto space-y-6">
+          </DialogTitle>
+        </DialogHeader>
+        <div className="p-6 pt-4 overflow-y-auto space-y-6">
           {/* 延迟指标 */}
           <section>
             <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-3 flex items-center gap-2">
@@ -366,8 +366,8 @@ export function MetricsPanel({ metrics, playbackStats, captureStats, onClose }: 
               </div>
             </div>
           </section>
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

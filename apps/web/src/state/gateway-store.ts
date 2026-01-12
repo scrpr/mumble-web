@@ -1,0 +1,603 @@
+'use client'
+
+import { create } from 'zustand'
+
+type ServerListEntry = { id: string; name: string }
+
+type ChannelState = {
+  id: number
+  name: string
+  parentId: number | null
+}
+
+type UserState = {
+  id: number
+  name: string
+  channelId: number | null
+}
+
+type ChatItem = {
+  id: string
+  senderId: number
+  message: string
+  timestampMs: number
+}
+
+type Metrics = {
+  wsRttMs?: number
+  serverRttMs?: number
+  wsBufferedAmountBytes?: number
+  voiceDownlinkFramesTotal?: number
+  voiceDownlinkBytesTotal?: number
+  voiceDownlinkDroppedFramesTotal?: number
+  voiceUplinkFramesTotal?: number
+  voiceUplinkBytesTotal?: number
+  voiceDownlinkFps?: number
+  voiceDownlinkKbps?: number
+  voiceDownlinkDroppedFps?: number
+  voiceUplinkFps?: number
+  voiceUplinkKbps?: number
+  voiceDownlinkJitterMs?: number
+  voiceDownlinkMissingFramesTotal?: number
+  voiceDownlinkOutOfOrderFramesTotal?: number
+}
+
+type Status = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+
+type GatewayStatus = 'closed' | 'connecting' | 'open'
+
+type VoiceOpusFrame = {
+  userId: number
+  target: number
+  sequence: number
+  isLastFrame: boolean
+  opus: Uint8Array
+}
+
+type GatewayStore = {
+  gatewayStatus: GatewayStatus
+  status: Status
+  connectError: string | null
+  servers: ServerListEntry[]
+
+  channelsById: Record<number, ChannelState>
+  usersById: Record<number, UserState>
+  rootChannelId: number | null
+  selfUserId: number | null
+
+  selectedChannelId: number | null
+  chat: ChatItem[]
+  metrics: Metrics
+
+  _ws: WebSocket | null
+  _pingInterval: number | null
+  _voiceSink: ((frame: VoiceOpusFrame) => void) | null
+  _lastConnectArgs: { serverId: string; username: string; password?: string; tokens?: string[] } | null
+  _connectedOnce: boolean
+  _reconnectAttempt: number
+  _reconnectTimeout: number | null
+  _sessionReconnectAttempt: number
+  _sessionReconnectTimeout: number | null
+
+  init: () => void
+  disconnect: () => void
+  connect: (args: { serverId: string; username: string; password?: string; tokens?: string[] }) => void
+  clearError: () => void
+  setVoiceSink: (sink: ((frame: VoiceOpusFrame) => void) | null) => void
+  sendMicOpus: (opus: Uint8Array, params?: { target?: number }) => void
+  sendMicEnd: () => void
+  selectChannel: (channelId: number) => void
+  joinSelectedChannel: () => void
+  sendTextToSelectedChannel: (message: string) => void
+}
+
+function getGatewayUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_GATEWAY_WS_URL
+  if (explicit) return explicit
+
+  // Dev default (web on :3000, gateway on :64737)
+  if (process.env.NODE_ENV === 'development') return 'ws://localhost:64737/ws'
+
+  // Prod default (web served by gateway on same origin)
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${proto}//${window.location.host}/ws`
+  }
+
+  return 'ws://localhost:64737/ws'
+}
+
+function safeParseJson(text: string): any | null {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+export const useGatewayStore = create<GatewayStore>((set, get) => ({
+  gatewayStatus: 'closed',
+  status: 'idle',
+  connectError: null,
+  servers: [],
+
+  channelsById: {},
+  usersById: {},
+  rootChannelId: null,
+  selfUserId: null,
+
+  selectedChannelId: null,
+  chat: [],
+  metrics: {},
+
+  _ws: null,
+  _pingInterval: null,
+  _voiceSink: null,
+  _lastConnectArgs: null,
+  _connectedOnce: false,
+  _reconnectAttempt: 0,
+  _reconnectTimeout: null,
+  _sessionReconnectAttempt: 0,
+  _sessionReconnectTimeout: null,
+
+  init: () => {
+    const existing = get()._ws
+    if (existing) return
+
+    const voiceByUser = new Map<
+      number,
+      { lastSeq?: number; lastArrivalMs?: number; jitterMs: number; received: number; missing: number; outOfOrder: number }
+    >()
+
+    let voiceStatsInterval: number | null = null
+
+    const ws = new WebSocket(getGatewayUrl())
+    ws.binaryType = 'arraybuffer'
+    set({ _ws: ws, gatewayStatus: 'connecting', status: 'idle', connectError: null })
+
+    ws.onopen = () => {
+      const reconnectTimeout = get()._reconnectTimeout
+      if (reconnectTimeout) window.clearTimeout(reconnectTimeout)
+      set({ gatewayStatus: 'open', _reconnectAttempt: 0, _reconnectTimeout: null })
+
+      // Start ping for ws RTT measurement
+      const id = window.setInterval(() => {
+        try {
+          ws.send(JSON.stringify({ type: 'ping', clientTimeMs: Date.now() }))
+        } catch {}
+      }, 2000)
+      set({ _pingInterval: id })
+
+      voiceStatsInterval = window.setInterval(() => {
+        if (get().status !== 'connected') return
+        let maxJitterMs = 0
+        let missing = 0
+        let outOfOrder = 0
+
+        for (const st of voiceByUser.values()) {
+          if (st.jitterMs > maxJitterMs) maxJitterMs = st.jitterMs
+          missing += st.missing
+          outOfOrder += st.outOfOrder
+        }
+
+        set((s) => ({
+          metrics: {
+            ...s.metrics,
+            voiceDownlinkJitterMs: maxJitterMs ? Math.round(maxJitterMs * 10) / 10 : 0,
+            voiceDownlinkMissingFramesTotal: missing,
+            voiceDownlinkOutOfOrderFramesTotal: outOfOrder
+          }
+        }))
+      }, 1000)
+
+      const auto = get()._lastConnectArgs
+      if (auto) {
+        set({ status: 'reconnecting', connectError: null })
+        try {
+          ws.send(JSON.stringify({ type: 'connect', ...auto }))
+          set({ status: 'connecting' })
+        } catch {
+          set({ status: 'reconnecting', connectError: 'Gateway WebSocket connected, but failed to send connect()' })
+        }
+      }
+    }
+
+    ws.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        const buf = ev.data
+        const view = new DataView(buf)
+        if (view.byteLength < 1) return
+        const kind = view.getUint8(0)
+        if (kind !== 0x11) return
+
+        if (view.byteLength < 11) return
+        const userId = view.getUint32(1, true)
+        const target = view.getUint8(5) & 0x1f
+        const flags = view.getUint8(6)
+        const isLastFrame = (flags & 0x01) !== 0
+        const sequence = view.getUint32(7, true)
+        const payloadOffset = 11
+        if (payloadOffset > view.byteLength) return
+        const payloadView = new Uint8Array(buf, payloadOffset)
+        const opus = new Uint8Array(payloadView.byteLength)
+        opus.set(payloadView)
+
+        const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now()
+        const st = voiceByUser.get(userId) ?? { jitterMs: 0, received: 0, missing: 0, outOfOrder: 0 }
+        st.received += 1
+        if (st.lastSeq != null) {
+          const delta = (sequence - st.lastSeq) >>> 0
+          if (delta === 0) {
+            st.outOfOrder += 1
+          } else if (delta > 1 && delta < 0x80000000) {
+            st.missing += delta - 1
+          } else if (delta >= 0x80000000) {
+            st.outOfOrder += 1
+          }
+        }
+        if (st.lastArrivalMs != null) {
+          const d = Math.abs(nowMs - st.lastArrivalMs - 20)
+          st.jitterMs += (d - st.jitterMs) / 16
+        }
+        st.lastSeq = sequence
+        st.lastArrivalMs = nowMs
+        voiceByUser.set(userId, st)
+
+        const sink = get()._voiceSink
+        if (sink) {
+          sink({ userId, target, sequence, isLastFrame, opus })
+        }
+        return
+      }
+
+      if (typeof ev.data !== 'string') return
+      const msg = safeParseJson(ev.data)
+      if (!msg || typeof msg.type !== 'string') return
+
+      switch (msg.type) {
+        case 'serverList': {
+          set({ servers: msg.servers ?? [] })
+          return
+        }
+        case 'connected': {
+          voiceByUser.clear()
+          const sessionReconnectTimeout = get()._sessionReconnectTimeout
+          if (sessionReconnectTimeout) window.clearTimeout(sessionReconnectTimeout)
+          const current = get()
+          set({
+            status: 'connected',
+            connectError: null,
+            _connectedOnce: true,
+            _sessionReconnectAttempt: 0,
+            _sessionReconnectTimeout: null,
+            selfUserId: msg.selfUserId ?? null,
+            rootChannelId: msg.rootChannelId ?? null,
+            selectedChannelId: current.selectedChannelId ?? msg.rootChannelId ?? null
+          })
+          return
+        }
+        case 'disconnected': {
+          voiceByUser.clear()
+          const reason = typeof msg.reason === 'string' ? msg.reason : 'disconnected'
+          const shouldReconnect = get()._connectedOnce && Boolean(get()._lastConnectArgs) && reason !== 'client_disconnect'
+
+          const sessionReconnectTimeout = get()._sessionReconnectTimeout
+          if (sessionReconnectTimeout) window.clearTimeout(sessionReconnectTimeout)
+
+          set({
+            status: shouldReconnect ? 'reconnecting' : 'idle',
+            connectError: shouldReconnect ? `连接已断开（${reason}），正在重连…` : null,
+            channelsById: {},
+            usersById: {},
+            rootChannelId: null,
+            selfUserId: null,
+            selectedChannelId: null,
+            chat: [],
+            metrics: {}
+          })
+
+          if (shouldReconnect) {
+            const attempt = get()._sessionReconnectAttempt + 1
+            const delayMs = Math.min(30_000, 1000 * 2 ** (attempt - 1))
+            const id = window.setTimeout(() => {
+              set({ _sessionReconnectTimeout: null })
+              const args = get()._lastConnectArgs
+              const currentWs = get()._ws
+              if (!args || !currentWs || currentWs.readyState !== WebSocket.OPEN) return
+              try {
+                set({ status: 'connecting', connectError: null })
+                currentWs.send(JSON.stringify({ type: 'connect', ...args }))
+              } catch {
+                set({ status: 'reconnecting', connectError: '重连失败，等待下一次重试…' })
+              }
+            }, delayMs)
+            set({ _sessionReconnectAttempt: attempt, _sessionReconnectTimeout: id })
+          }
+          return
+        }
+        case 'stateSnapshot': {
+          const channelsById: Record<number, ChannelState> = {}
+          const usersById: Record<number, UserState> = {}
+
+          for (const ch of msg.channels ?? []) {
+            channelsById[ch.id] = { id: ch.id, name: ch.name ?? '', parentId: ch.parentId ?? null }
+          }
+          for (const u of msg.users ?? []) {
+            usersById[u.id] = { id: u.id, name: u.name ?? '', channelId: u.channelId ?? null }
+          }
+
+          const current = get()
+          const selfUser = current.selfUserId != null ? usersById[current.selfUserId] : undefined
+          const selfChannelId = selfUser?.channelId ?? null
+
+          let selectedChannelId = current.selectedChannelId
+          const shouldAutoSelectSelf =
+            selectedChannelId == null || (current.rootChannelId != null && selectedChannelId === current.rootChannelId)
+
+          if (shouldAutoSelectSelf && selfChannelId != null) {
+            selectedChannelId = selfChannelId
+          }
+
+          if (selectedChannelId != null && !channelsById[selectedChannelId]) {
+            selectedChannelId = null
+          }
+
+          if (selectedChannelId == null && current.rootChannelId != null && channelsById[current.rootChannelId]) {
+            selectedChannelId = current.rootChannelId
+          }
+
+          if (selectedChannelId == null) {
+            const first = (msg.channels ?? [])[0]
+            selectedChannelId = first?.id ?? null
+          }
+
+          set({ channelsById, usersById, selectedChannelId })
+          return
+        }
+        case 'channelUpsert': {
+          const ch = msg.channel
+          if (!ch) return
+          set((s) => ({
+            channelsById: {
+              ...s.channelsById,
+              [ch.id]: { id: ch.id, name: ch.name ?? '', parentId: ch.parentId ?? null }
+            }
+          }))
+          return
+        }
+        case 'channelRemove': {
+          const id = msg.channelId
+          if (typeof id !== 'number') return
+          set((s) => {
+            const next = { ...s.channelsById }
+            delete next[id]
+            return { channelsById: next }
+          })
+          return
+        }
+        case 'userUpsert': {
+          const u = msg.user
+          if (!u) return
+          set((s) => ({
+            usersById: {
+              ...s.usersById,
+              [u.id]: { id: u.id, name: u.name ?? '', channelId: u.channelId ?? null }
+            }
+          }))
+          return
+        }
+        case 'userRemove': {
+          const id = msg.userId
+          if (typeof id !== 'number') return
+          set((s) => {
+            const next = { ...s.usersById }
+            delete next[id]
+            return { usersById: next }
+          })
+          return
+        }
+        case 'textRecv': {
+          const senderId = typeof msg.senderId === 'number' ? msg.senderId : 0
+          const message = typeof msg.message === 'string' ? msg.message : ''
+          const timestampMs = typeof msg.timestampMs === 'number' ? msg.timestampMs : Date.now()
+          const id = `${timestampMs}-${Math.random().toString(16).slice(2)}`
+          const selfUserId = get().selfUserId
+          if (
+            selfUserId != null &&
+            senderId === selfUserId &&
+            get().chat.some((c) => c.senderId === senderId && c.message === message && Math.abs(c.timestampMs - timestampMs) < 2000)
+          ) {
+            return
+          }
+          set((s) => ({ chat: [...s.chat, { id, senderId, message, timestampMs }].slice(-200) }))
+          return
+        }
+        case 'metrics': {
+          set((s) => ({
+            metrics: {
+              ...s.metrics,
+              wsRttMs: msg.wsRttMs,
+              serverRttMs: msg.serverRttMs,
+              wsBufferedAmountBytes: msg.wsBufferedAmountBytes,
+              voiceDownlinkFramesTotal: msg.voiceDownlinkFramesTotal,
+              voiceDownlinkBytesTotal: msg.voiceDownlinkBytesTotal,
+              voiceDownlinkDroppedFramesTotal: msg.voiceDownlinkDroppedFramesTotal,
+              voiceUplinkFramesTotal: msg.voiceUplinkFramesTotal,
+              voiceUplinkBytesTotal: msg.voiceUplinkBytesTotal,
+              voiceDownlinkFps: msg.voiceDownlinkFps,
+              voiceDownlinkKbps: msg.voiceDownlinkKbps,
+              voiceDownlinkDroppedFps: msg.voiceDownlinkDroppedFps,
+              voiceUplinkFps: msg.voiceUplinkFps,
+              voiceUplinkKbps: msg.voiceUplinkKbps
+            }
+          }))
+          return
+        }
+        case 'error': {
+          const code = typeof msg.code === 'string' ? msg.code : 'error'
+          const message = typeof msg.message === 'string' ? msg.message : 'Unknown error'
+          const pretty = `[${code}] ${message}`
+          if (msg.details != null) {
+            // eslint-disable-next-line no-console
+            console.warn('[gateway error details]', msg.details)
+          }
+
+          if (get().status === 'connecting') {
+            set({ status: 'error', connectError: pretty })
+            return
+          }
+
+          const timestampMs = Date.now()
+          const id = `${timestampMs}-system-${Math.random().toString(16).slice(2)}`
+          set((s) => ({
+            connectError: pretty,
+            chat: [...s.chat, { id, senderId: 0, message: pretty, timestampMs }].slice(-200)
+          }))
+          return
+        }
+      }
+    }
+
+    ws.onclose = () => {
+      const pingId = get()._pingInterval
+      if (pingId) window.clearInterval(pingId)
+      if (voiceStatsInterval) window.clearInterval(voiceStatsInterval)
+
+      const sessionReconnectTimeout = get()._sessionReconnectTimeout
+      if (sessionReconnectTimeout) window.clearTimeout(sessionReconnectTimeout)
+
+      const attempt = get()._reconnectAttempt + 1
+      const delayMs = Math.min(30_000, 500 * 2 ** (attempt - 1))
+      const id = window.setTimeout(() => {
+        set({ _reconnectTimeout: null })
+        get().init()
+      }, delayMs)
+
+      set({
+        _ws: null,
+        _pingInterval: null,
+        _voiceSink: null,
+        gatewayStatus: 'closed',
+        status: get()._lastConnectArgs ? 'reconnecting' : 'idle',
+        connectError: get()._lastConnectArgs ? 'Gateway 连接已断开，正在重连…' : null,
+        channelsById: {},
+        usersById: {},
+        rootChannelId: null,
+        selfUserId: null,
+        selectedChannelId: null,
+        chat: [],
+        metrics: {},
+        _reconnectAttempt: attempt,
+        _reconnectTimeout: id,
+        _sessionReconnectAttempt: 0,
+        _sessionReconnectTimeout: null
+      })
+    }
+  },
+
+  disconnect: () => {
+    const reconnectTimeout = get()._reconnectTimeout
+    if (reconnectTimeout) window.clearTimeout(reconnectTimeout)
+    const sessionReconnectTimeout = get()._sessionReconnectTimeout
+    if (sessionReconnectTimeout) window.clearTimeout(sessionReconnectTimeout)
+
+    const ws = get()._ws
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: 'disconnect' }))
+      } catch {}
+    }
+    set({
+      status: 'idle',
+      connectError: null,
+      channelsById: {},
+      usersById: {},
+      rootChannelId: null,
+      selfUserId: null,
+      selectedChannelId: null,
+      chat: [],
+      metrics: {},
+      _lastConnectArgs: null,
+      _connectedOnce: false,
+      _reconnectAttempt: 0,
+      _reconnectTimeout: null,
+      _sessionReconnectAttempt: 0,
+      _sessionReconnectTimeout: null
+    })
+  },
+
+  connect: (args) => {
+    const ws = get()._ws
+    set({ _lastConnectArgs: args, _connectedOnce: false })
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      set({ connectError: 'Gateway WebSocket not connected (will retry)', status: 'reconnecting' })
+      get().init()
+      return
+    }
+    set({ status: 'connecting', connectError: null })
+    try {
+      ws.send(JSON.stringify({ type: 'connect', ...args }))
+    } catch {
+      set({ status: 'reconnecting', connectError: 'Failed to send connect() (will retry)' })
+    }
+  },
+
+  clearError: () => set({ connectError: null }),
+
+  setVoiceSink: (sink) => set({ _voiceSink: sink }),
+
+  sendMicOpus: (opus, params) => {
+    const ws = get()._ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+    const target = params?.target ?? 0
+
+    const headerBytes = 4
+    const buffer = new ArrayBuffer(headerBytes + opus.byteLength)
+    const view = new DataView(buffer)
+    view.setUint8(0, 0x12)
+    view.setUint8(1, target & 0xff)
+    view.setUint8(2, 0)
+    view.setUint8(3, 0)
+    new Uint8Array(buffer, headerBytes).set(opus)
+    try {
+      ws.send(buffer)
+    } catch {}
+  },
+
+  sendMicEnd: () => {
+    const ws = get()._ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    try {
+      ws.send(new Uint8Array([0x03]).buffer)
+    } catch {}
+  },
+
+  selectChannel: (channelId) => set({ selectedChannelId: channelId }),
+
+  joinSelectedChannel: () => {
+    const ws = get()._ws
+    const channelId = get().selectedChannelId
+    if (!ws || ws.readyState !== WebSocket.OPEN || channelId == null) return
+    try {
+      ws.send(JSON.stringify({ type: 'joinChannel', channelId }))
+    } catch {}
+  },
+
+  sendTextToSelectedChannel: (message) => {
+    const ws = get()._ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+    const channelId = get().selectedChannelId ?? undefined
+    try {
+      ws.send(JSON.stringify({ type: 'textSend', channelId, message }))
+    } catch {}
+
+    const selfUserId = get().selfUserId
+    const timestampMs = Date.now()
+    const id = `${timestampMs}-local-${Math.random().toString(16).slice(2)}`
+    set((s) => ({
+      chat: [...s.chat, { id, senderId: selfUserId ?? 0, message, timestampMs }].slice(-200)
+    }))
+  }
+}))

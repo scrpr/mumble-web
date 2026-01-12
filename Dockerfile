@@ -1,35 +1,15 @@
-FROM alpine:edge
+FROM node:20-alpine
 
-LABEL maintainer="Andreas Peters <support@aventer.biz>"
+WORKDIR /home/node/app
+RUN corepack enable
 
-COPY ./ /home/node
-
-RUN echo http://nl.alpinelinux.org/alpine/edge/testing >> /etc/apk/repositories && \
-    apk add --no-cache git nodejs npm tini websockify && \
-    adduser -D -g 1001 -u 1001 -h /home/node node && \
-    mkdir -p /home/node && \
-    mkdir -p /home/node/.npm-global && \
-    mkdir -p /home/node/app  && \
-    chown -R node: /home/node 
+COPY --chown=node:node . .
 
 USER node
+ENV NODE_ENV=production
 
-ENV PATH=/home/node/.npm-global/bin:$PATH
-ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
 
-RUN cd /home/node && \
-    npm install && \
-    npm run build 
-
-USER root
-
-RUN apk del gcc git
-
-USER node
-
-EXPOSE 8080
-ENV MUMBLE_SERVER=mumble.aventer.biz:64738
-
-ENTRYPOINT ["/sbin/tini", "--"]
-CMD websockify --ssl-target --web=/home/node/dist 8080 "$MUMBLE_SERVER"
-
+EXPOSE 64737
+CMD ["pnpm", "start"]

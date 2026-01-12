@@ -36,6 +36,14 @@ build/Release
 node_modules
 jspm_packages
 
+# Next.js
+.next
+out
+.vercel
+
+# Gateway build output
+apps/gateway/dist
+
 # Optional npm cache directory
 .npm
 
@@ -52,3 +60,5 @@ jspm_packages
 .yarn-integrity
 
 
+.ace-tool/
+mumble-server/

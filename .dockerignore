@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.pnpm-store
+**/.next
+**/out
+dist
+apps/gateway/dist
+*.log
+.git
+.ace-tool

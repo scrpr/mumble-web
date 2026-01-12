@@ -30,8 +30,9 @@ export default function ConnectPage() {
   }, [status, router])
 
   useEffect(() => {
-    if (!serverId && servers.length > 0) {
-      setServerId(servers[0].id)
+    const first = servers[0]
+    if (!serverId && first) {
+      setServerId(first.id)
     }
   }, [servers, serverId])
 

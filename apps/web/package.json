@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build --webpack",
+    "build": "next build",
     "start": "next start -p 3000"
   },
   "dependencies": {

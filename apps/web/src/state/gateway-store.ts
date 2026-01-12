@@ -235,23 +235,21 @@ export const useGatewayStore = create<GatewayStore>()(
               ...(speakingChanged ? { speakingByUserId: speakingUpdate } : {}),
             }))
           }, 100)
-        }
 
-        const auto = get()._lastConnectArgs
-        if (auto) {
-          // If we have persisted credentials, try to auto-reconnect
-          // We set a small timeout to allow initial render to happen if needed, 
-          // but mainly we just want to fire it off.
-          set({ status: 'reconnecting', connectError: null })
-          setTimeout(() => {
-             const currentWs = get()._ws
-             if(currentWs && currentWs.readyState === WebSocket.OPEN) {
-                 try {
+          // Auto-reconnect if we have persisted credentials
+          const auto = get()._lastConnectArgs
+          if (auto) {
+            set({ status: 'reconnecting', connectError: null })
+            setTimeout(() => {
+              const currentWs = get()._ws
+              if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+                try {
                   currentWs.send(JSON.stringify({ type: 'connect', ...auto }))
                   set({ status: 'connecting' })
-                 } catch {}
-             }
-          }, 100)
+                } catch {}
+              }
+            }, 100)
+          }
         }
 
         ws.onmessage = (ev) => {

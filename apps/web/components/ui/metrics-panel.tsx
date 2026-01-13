@@ -20,6 +20,9 @@ type Metrics = {
   voiceDownlinkDroppedFramesTotal?: number
   voiceUplinkFramesTotal?: number
   voiceUplinkBytesTotal?: number
+  voiceUplinkPacerQueueFrames?: number
+  voiceUplinkPacerQueueMs?: number
+  voiceUplinkPacerDroppedFramesTotal?: number
   voiceDownlinkFps?: number
   voiceDownlinkKbps?: number
   voiceDownlinkDroppedFps?: number
@@ -337,6 +340,23 @@ export function MetricsPanel({ metrics, playbackStats, captureStats, open, onOpe
                 value={metrics.uplinkDroppedFramesTotal ?? 0}
                 icon={AlertTriangle}
                 status={(metrics.uplinkDroppedFramesTotal ?? 0) > 0 ? 'warn' : 'good'}
+              />
+              <MetricCard
+                label="Gateway 队列"
+                value={metrics.voiceUplinkPacerQueueMs?.toFixed(0) ?? '-'}
+                unit="ms"
+              />
+              <MetricCard
+                label="Gateway 丢帧"
+                value={metrics.voiceUplinkPacerDroppedFramesTotal ?? '-'}
+                icon={AlertTriangle}
+                status={
+                  metrics.voiceUplinkPacerDroppedFramesTotal != null
+                    ? metrics.voiceUplinkPacerDroppedFramesTotal > 0
+                      ? 'warn'
+                      : 'good'
+                    : undefined
+                }
               />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

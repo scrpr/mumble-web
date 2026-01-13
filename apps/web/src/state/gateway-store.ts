@@ -36,6 +36,9 @@ type Metrics = {
   voiceDownlinkDroppedFramesTotal?: number
   voiceUplinkFramesTotal?: number
   voiceUplinkBytesTotal?: number
+  voiceUplinkPacerQueueFrames?: number
+  voiceUplinkPacerQueueMs?: number
+  voiceUplinkPacerDroppedFramesTotal?: number
   voiceDownlinkFps?: number
   voiceDownlinkKbps?: number
   voiceDownlinkDroppedFps?: number
@@ -596,6 +599,9 @@ export const useGatewayStore = create<GatewayStore>()(
                   voiceDownlinkDroppedFramesTotal: msg.voiceDownlinkDroppedFramesTotal,
                   voiceUplinkFramesTotal: msg.voiceUplinkFramesTotal,
                   voiceUplinkBytesTotal: msg.voiceUplinkBytesTotal,
+                  voiceUplinkPacerQueueFrames: msg.voiceUplinkPacerQueueFrames,
+                  voiceUplinkPacerQueueMs: msg.voiceUplinkPacerQueueMs,
+                  voiceUplinkPacerDroppedFramesTotal: msg.voiceUplinkPacerDroppedFramesTotal,
                   voiceDownlinkFps: msg.voiceDownlinkFps,
                   voiceDownlinkKbps: msg.voiceDownlinkKbps,
                   voiceDownlinkDroppedFps: msg.voiceDownlinkDroppedFps,

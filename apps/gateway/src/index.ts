@@ -13,11 +13,20 @@ import { safeJsonParse, sendJson } from './ws.js'
 import type { GatewayClientMessage, GatewayServerMessage, ServerConfig } from './types.js'
 import { VOICE_UPLINK_END, VOICE_UPLINK_OPUS, decodeUplinkVoiceMessage, encodeDownlinkOpus } from './voice-protocol.js'
 
+type UplinkPacerItem = { type: 'opus'; target: number; opus: Buffer } | { type: 'end'; target: number }
+
 type Session = {
   serverId: string
   server: ServerConfig
   mumble: Awaited<ReturnType<typeof connectMumbleServer>>
   mumbleUnsubscribers: Array<() => void>
+  uplinkPacer: {
+    queue: UplinkPacerItem[]
+    timer: NodeJS.Timeout | null
+    lastEnqueueAtMs: number
+    lastTarget: number
+    droppedFramesTotal: number
+  }
   metrics: {
     lastServerRttMs?: number
     voiceDownlinkFrames: number
@@ -35,6 +44,13 @@ type Session = {
 }
 
 const PORT = Number(process.env.PORT ?? 64737)
+
+const VOICE_UPLINK_PACING_INTERVAL_MS = Number(process.env.VOICE_UPLINK_PACING_INTERVAL_MS ?? 20)
+const VOICE_UPLINK_PACING_ENABLED = Number.isFinite(VOICE_UPLINK_PACING_INTERVAL_MS) && VOICE_UPLINK_PACING_INTERVAL_MS > 0
+const rawMaxQueueFrames = Number(process.env.VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES ?? 200)
+const VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES = Number.isFinite(rawMaxQueueFrames) ? Math.max(1, Math.min(2000, rawMaxQueueFrames)) : 200
+const rawIdleTimeoutMs = Number(process.env.VOICE_UPLINK_PACING_IDLE_TIMEOUT_MS ?? 250)
+const VOICE_UPLINK_PACING_IDLE_TIMEOUT_MS = Number.isFinite(rawIdleTimeoutMs) ? Math.max(50, Math.min(5000, rawIdleTimeoutMs)) : 250
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -89,6 +105,16 @@ function sendMetrics(ws: WebSocket, session: Session) {
   msg.voiceDownlinkDroppedFramesTotal = session.metrics.voiceDownlinkDroppedFrames
   msg.voiceUplinkFramesTotal = session.metrics.voiceUplinkFrames
   msg.voiceUplinkBytesTotal = session.metrics.voiceUplinkBytes
+
+  if (VOICE_UPLINK_PACING_ENABLED) {
+    let queuedFrames = 0
+    for (const item of session.uplinkPacer.queue) {
+      if (item.type === 'opus') queuedFrames += 1
+    }
+    msg.voiceUplinkPacerQueueFrames = queuedFrames
+    msg.voiceUplinkPacerQueueMs = queuedFrames * VOICE_UPLINK_PACING_INTERVAL_MS
+    msg.voiceUplinkPacerDroppedFramesTotal = session.uplinkPacer.droppedFramesTotal
+  }
 
   const prevAtMs = session.metrics.lastMetricsAtMs
   if (prevAtMs != null) {
@@ -196,10 +222,60 @@ wss.on('connection', (ws) => {
   let session: Session | null = null
   let metricsInterval: NodeJS.Timeout | null = null
 
+  const stopVoiceUplinkPacer = (sessionRef: Session): void => {
+    const pacer = sessionRef.uplinkPacer
+    if (pacer.timer) clearInterval(pacer.timer)
+    pacer.timer = null
+    pacer.queue.length = 0
+    pacer.lastEnqueueAtMs = 0
+    pacer.lastTarget = 0
+  }
+
+  const tickVoiceUplinkPacer = (sessionRef: Session): void => {
+    const pacer = sessionRef.uplinkPacer
+
+    // Session changed or cleaned up; stop this pacer instance.
+    if (session !== sessionRef) {
+      stopVoiceUplinkPacer(sessionRef)
+      return
+    }
+
+    const next = pacer.queue.shift()
+    if (!next) {
+      const now = Date.now()
+      if (pacer.timer && pacer.lastEnqueueAtMs > 0 && now - pacer.lastEnqueueAtMs > VOICE_UPLINK_PACING_IDLE_TIMEOUT_MS) {
+        stopVoiceUplinkPacer(sessionRef)
+      }
+      return
+    }
+
+    const client = sessionRef.mumble.client
+    if (next.type === 'opus') {
+      try {
+        client.sendOpusFrame(next.target, next.opus)
+      } catch {}
+      return
+    }
+
+    try {
+      client.sendOpusEnd(next.target)
+    } catch {}
+    stopVoiceUplinkPacer(sessionRef)
+  }
+
+  const startVoiceUplinkPacer = (sessionRef: Session): void => {
+    const pacer = sessionRef.uplinkPacer
+    if (pacer.timer) return
+    pacer.timer = setInterval(() => tickVoiceUplinkPacer(sessionRef), VOICE_UPLINK_PACING_INTERVAL_MS)
+    // Avoid adding an extra 1-tick latency for the first queued frame.
+    tickVoiceUplinkPacer(sessionRef)
+  }
+
   const cleanup = () => {
     if (metricsInterval) clearInterval(metricsInterval)
     metricsInterval = null
     if (session) {
+      stopVoiceUplinkPacer(session)
       for (const off of session.mumbleUnsubscribers) {
         try {
           off()
@@ -229,10 +305,49 @@ wss.on('connection', (ws) => {
         if (!decoded) return
 
         const client = session.mumble.client
-        if (decoded.type === 'end') {
+        if (!VOICE_UPLINK_PACING_ENABLED) {
+          if (decoded.type === 'end') {
+            try {
+              client.sendOpusEnd(0)
+            } catch {}
+            return
+          }
+
           try {
-            client.sendOpusEnd(0)
+            if (decoded.type !== 'opus') return
+            session.metrics.voiceUplinkFrames += 1
+            session.metrics.voiceUplinkBytes += decoded.opus.byteLength
+            client.sendOpusFrame(decoded.target, decoded.opus)
           } catch {}
+          return
+        }
+
+        const pacer = session.uplinkPacer
+        pacer.lastEnqueueAtMs = Date.now()
+
+        if (decoded.type === 'end') {
+          const target = pacer.lastTarget
+
+          // If nothing is queued, send end immediately so we don't extend tail latency.
+          if (pacer.queue.length === 0) {
+            try {
+              client.sendOpusEnd(target)
+            } catch {}
+            stopVoiceUplinkPacer(session)
+            return
+          }
+
+          // Ensure only one "end" marker is queued.
+          for (let i = pacer.queue.length - 1; i >= 0; i--) {
+            if (pacer.queue[i]?.type === 'end') pacer.queue.splice(i, 1)
+          }
+          pacer.queue.push({ type: 'end', target })
+          if (pacer.queue.length > VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES) {
+            const drop = pacer.queue.length - VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES
+            pacer.queue.splice(0, drop)
+            pacer.droppedFramesTotal += drop
+          }
+          startVoiceUplinkPacer(session)
           return
         }
 
@@ -240,7 +355,16 @@ wss.on('connection', (ws) => {
           if (decoded.type !== 'opus') return
           session.metrics.voiceUplinkFrames += 1
           session.metrics.voiceUplinkBytes += decoded.opus.byteLength
-          client.sendOpusFrame(decoded.target, decoded.opus)
+
+          pacer.lastTarget = decoded.target
+          pacer.queue.push({ type: 'opus', target: decoded.target, opus: decoded.opus })
+
+          if (pacer.queue.length > VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES) {
+            const drop = pacer.queue.length - VOICE_UPLINK_PACING_MAX_QUEUE_FRAMES
+            pacer.queue.splice(0, drop)
+            pacer.droppedFramesTotal += drop
+          }
+          startVoiceUplinkPacer(session)
         } catch {}
         return
       }
@@ -293,6 +417,7 @@ wss.on('connection', (ws) => {
           server,
           mumble,
           mumbleUnsubscribers: [],
+          uplinkPacer: { queue: [], timer: null, lastEnqueueAtMs: 0, lastTarget: 0, droppedFramesTotal: 0 },
           metrics: {
             voiceDownlinkFrames: 0,
             voiceDownlinkBytes: 0,

@@ -35,6 +35,9 @@ export type GatewayServerMessage =
       voiceDownlinkDroppedFramesTotal?: number
       voiceUplinkFramesTotal?: number
       voiceUplinkBytesTotal?: number
+      voiceUplinkPacerQueueFrames?: number
+      voiceUplinkPacerQueueMs?: number
+      voiceUplinkPacerDroppedFramesTotal?: number
       voiceDownlinkFps?: number
       voiceDownlinkKbps?: number
       voiceDownlinkDroppedFps?: number

@@ -1,12 +1,13 @@
 import type { ChannelState, ServerConfig, UserState } from './types.js'
 import { MumbleTcpClient, type MumblePermissionDenied, type MumbleReject, type MumbleTextMessage } from './mumble-protocol/client.js'
 import { TcpMessageType } from './mumble-protocol/messages.js'
-import { decodeLegacyVoicePacketFromServer, encodeLegacyOpusPacketFromClient } from './mumble-protocol/voice-legacy.js'
+import { MumbleUdpVoiceClient } from './mumble-protocol/udp-voice-client.js'
+import { decodeLegacyVoicePacketFromServer, encodeLegacyOpusPacketFromClient, encodeLegacyPingPacket } from './mumble-protocol/voice-legacy.js'
 import { TypedEmitter } from './mumble-protocol/typed-emitter.js'
 
 export type ConnectedMumble = {
   client: MumbleSession
-  voiceTransport: 'tcp-tunnel'
+  voiceTransport: 'tcp-tunnel' | 'udp'
   close: () => void
 }
 
@@ -34,12 +35,17 @@ type SessionEvents = {
 
 export class MumbleSession {
   private _tcp: MumbleTcpClient
+  private _udp: MumbleUdpVoiceClient | null = null
   private _outSequence = 0n
   private _unsubscribers: Array<() => void> = []
+  private _udpFallbackTimer: NodeJS.Timeout | null = null
+
+  private _recentVoiceFrames = new Map<string, number>()
 
   readonly events = new TypedEmitter<SessionEvents>()
 
-  constructor(tcp: MumbleTcpClient) {
+  constructor(params: { tcp: MumbleTcpClient; udp?: { host: string; port: number } }) {
+    const { tcp } = params
     this._tcp = tcp
 
     this._unsubscribers.push(
@@ -55,6 +61,27 @@ export class MumbleSession {
       tcp.events.on('disconnected', () => this.events.emit('disconnected', undefined)),
       tcp.events.on('udpTunnel', (pkt) => this._onTunnelPacket(pkt))
     )
+
+    if (params.udp) {
+      this._udp = new MumbleUdpVoiceClient({ tcp, host: params.udp.host, port: params.udp.port })
+      this._unsubscribers.push(
+        this._udp.events.on('voiceOpus', (frame) => this._emitVoice(frame)),
+        this._udp.events.on('error', (e) => this.events.emit('error', e)),
+        this._udp.events.on('udpReady', () => this._clearUdpFallbackTimer())
+      )
+
+      // If UDP can't be established quickly, force server back into TCP voice mode by tunneling a ping packet.
+      // This avoids a regression where the server starts sending voice over UDP that the gateway can't receive.
+      if (this._udp.canSend()) {
+        this._udpFallbackTimer = setTimeout(() => {
+          if (!this._udp || this._udp.udpReady) return
+          try {
+            const ping = encodeLegacyPingPacket(BigInt(Date.now()))
+            this._tcp.sendMessage(TcpMessageType.UDPTunnel, ping)
+          } catch {}
+        }, 2_500)
+      }
+    }
   }
 
   get selfUserId() {
@@ -86,12 +113,20 @@ export class MumbleSession {
   }
 
   close(): void {
+    this._clearUdpFallbackTimer()
     for (const off of this._unsubscribers) {
       try {
         off()
       } catch {}
     }
     this._unsubscribers = []
+
+    if (this._udp) {
+      try {
+        this._udp.close()
+      } catch {}
+      this._udp = null
+    }
 
     this._tcp.close()
   }
@@ -111,6 +146,10 @@ export class MumbleSession {
       opusData: opus,
       isLastFrame: false
     })
+    if (this._udp?.udpReady) {
+      const ok = this._udp.sendPlainPacket(packet)
+      if (ok) return
+    }
     this._tcp.sendMessage(TcpMessageType.UDPTunnel, packet)
   }
 
@@ -121,6 +160,10 @@ export class MumbleSession {
       opusData: Buffer.alloc(0),
       isLastFrame: true
     })
+    if (this._udp?.udpReady) {
+      const ok = this._udp.sendPlainPacket(packet)
+      if (ok) return
+    }
     this._tcp.sendMessage(TcpMessageType.UDPTunnel, packet)
   }
 
@@ -128,13 +171,38 @@ export class MumbleSession {
     const decoded = decodeLegacyVoicePacketFromServer(packet)
     if (!decoded) return
     if (decoded.kind !== 'opus') return
-    this.events.emit('voiceOpus', {
+    this._emitVoice({
       userId: decoded.sessionId,
       target: decoded.target,
       sequence: decoded.sequence,
       isLastFrame: decoded.isLastFrame,
       opus: Buffer.from(decoded.opusData)
     })
+  }
+
+  private _emitVoice(frame: VoiceOpusFrame): void {
+    // De-dupe bursts when the server is switching between UDP and TCP-tunnel.
+    const key = `${frame.userId}:${frame.target}:${frame.sequence.toString()}`
+    const now = Date.now()
+    const prev = this._recentVoiceFrames.get(key)
+    if (prev != null && now - prev < 1000) return
+    this._recentVoiceFrames.set(key, now)
+
+    if (this._recentVoiceFrames.size > 2048) {
+      for (const [k, ts] of this._recentVoiceFrames) {
+        if (now - ts <= 1500) break
+        this._recentVoiceFrames.delete(k)
+      }
+      if (this._recentVoiceFrames.size > 4096) this._recentVoiceFrames.clear()
+    }
+
+    this.events.emit('voiceOpus', frame)
+  }
+
+  private _clearUdpFallbackTimer(): void {
+    if (!this._udpFallbackTimer) return
+    clearTimeout(this._udpFallbackTimer)
+    this._udpFallbackTimer = null
   }
 }
 
@@ -190,11 +258,11 @@ export async function connectMumbleServer(params: {
     })
   })
 
-  const session = new MumbleSession(tcp)
+  const session = new MumbleSession({ tcp, udp: { host: server.host, port: server.port } })
 
   return {
     client: session,
-    voiceTransport: 'tcp-tunnel',
+    voiceTransport: 'udp',
     close: () => session.close()
   }
 }

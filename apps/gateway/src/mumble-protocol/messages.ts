@@ -108,6 +108,44 @@ export function decodePing(buf: Buffer): PingMessage {
   return out
 }
 
+export type CryptSetupMessage = {
+  key?: Buffer
+  clientNonce?: Buffer
+  serverNonce?: Buffer
+}
+
+export function encodeCryptSetup(msg: CryptSetupMessage): Buffer {
+  const w = new ProtobufWriter()
+  if (msg.key != null) w.bytes(1, msg.key)
+  if (msg.clientNonce != null) w.bytes(2, msg.clientNonce)
+  if (msg.serverNonce != null) w.bytes(3, msg.serverNonce)
+  return w.finish()
+}
+
+export function decodeCryptSetup(buf: Buffer): CryptSetupMessage {
+  const r = new ProtobufReader(buf)
+  const out: CryptSetupMessage = {}
+  for (;;) {
+    const tag = r.readTag()
+    if (!tag) break
+    switch (tag.fieldNumber) {
+      case 1:
+        out.key = r.readBytes()
+        break
+      case 2:
+        out.clientNonce = r.readBytes()
+        break
+      case 3:
+        out.serverNonce = r.readBytes()
+        break
+      default:
+        r.skip(tag.wireType)
+        break
+    }
+  }
+  return out
+}
+
 export type RejectMessage = {
   type?: number
   reason?: string

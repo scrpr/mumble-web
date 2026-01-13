@@ -2,10 +2,12 @@ import tls from 'node:tls'
 import { setInterval, clearInterval } from 'node:timers'
 import type { ChannelState, UserState } from '../types.js'
 import {
+  type CryptSetupMessage,
   TcpMessageType,
   decodeChannelRemove,
   decodeChannelState,
   decodeCodecVersion,
+  decodeCryptSetup,
   decodePermissionDenied,
   decodePing,
   decodeReject,
@@ -15,6 +17,7 @@ import {
   decodeUserState,
   decodeVersion,
   encodeAuthenticate,
+  encodeCryptSetup,
   encodePing,
   encodeTextMessage,
   encodeUserState,
@@ -60,6 +63,7 @@ type Events = {
   serverRtt: number
   serverSync: MumbleServerInfo
   udpTunnel: Buffer
+  cryptSetup: CryptSetupMessage
   reject: MumbleReject
   denied: MumblePermissionDenied
   error: unknown
@@ -87,6 +91,7 @@ export class MumbleTcpClient {
   selfUserId = 0
   rootChannelId = 0
   serverInfo: MumbleServerInfo = {}
+  cryptSetup: CryptSetupMessage = {}
 
   constructor(socket: tls.TLSSocket) {
     this._socket = socket
@@ -199,6 +204,10 @@ export class MumbleTcpClient {
     })
 
     this.sendMessage(TcpMessageType.TextMessage, payload)
+  }
+
+  sendCryptSetup(msg: CryptSetupMessage): void {
+    this.sendMessage(TcpMessageType.CryptSetup, encodeCryptSetup(msg))
   }
 
   private _onClose() {
@@ -350,7 +359,14 @@ export class MumbleTcpClient {
         case TcpMessageType.UDPTunnel:
           this.events.emit('udpTunnel', payload)
           return
-        case TcpMessageType.CryptSetup:
+        case TcpMessageType.CryptSetup: {
+          const msg = decodeCryptSetup(payload)
+          if (msg.key != null) this.cryptSetup.key = Buffer.from(msg.key)
+          if (msg.clientNonce != null) this.cryptSetup.clientNonce = Buffer.from(msg.clientNonce)
+          if (msg.serverNonce != null) this.cryptSetup.serverNonce = Buffer.from(msg.serverNonce)
+          this.events.emit('cryptSetup', msg)
+          return
+        }
         default:
           return
       }

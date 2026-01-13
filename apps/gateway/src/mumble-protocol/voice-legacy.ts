@@ -183,6 +183,10 @@ export function decodeLegacyVoicePacketFromServer(buf: Buffer): DecodedLegacyVoi
   }
 }
 
+export function encodeLegacyPingPacket(timestamp: bigint): Buffer {
+  return Buffer.concat([Buffer.from([0x20]), writeMumbleVarint(timestamp)])
+}
+
 export function encodeLegacyOpusPacketFromClient(params: { target: number; sequence: bigint; opusData?: Buffer; isLastFrame: boolean }): Buffer {
   const target = params.target & 0x1f
   const header = ((4 & 0x07) << 5) | target
@@ -200,4 +204,3 @@ export function encodeLegacyOpusPacketFromClient(params: { target: number; seque
     opusData
   ])
 }
-

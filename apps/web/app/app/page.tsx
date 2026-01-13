@@ -10,7 +10,7 @@ import { cn } from '../../src/ui/cn'
 import { VoiceEngine } from '../../src/audio/voice-engine'
 import { canUseWebCodecsOpus, createWebCodecsOpusDecoder, createWebCodecsOpusEncoder } from '../../src/audio/webcodecs-opus'
 import { Rnnoise, type DenoiseState } from '@shiguredo/rnnoise-wasm'
-import { Mic, MicOff, Headphones, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, Activity, Send, BarChart3 } from 'lucide-react'
+import { Mic, MicOff, Video, Settings, LogOut, MessageSquare, Users, Hash, Volume2, VolumeX, Activity, Send, BarChart3 } from 'lucide-react'
 import { MetricsPanel } from '../../components/ui/metrics-panel'
 import { SettingsDialog } from '../../components/ui/settings-dialog'
 
@@ -50,7 +50,7 @@ export default function AppPage() {
   const webCodecsAvailable = canUseWebCodecsOpus()
 
   const [message, setMessage] = useState('')
-  const [audioReady, setAudioReady] = useState(false)
+  const [muted, setMuted] = useState(false)
   const [micEnabled, setMicEnabled] = useState(false)
   const [showMetricsPanel, setShowMetricsPanel] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -199,7 +199,9 @@ export default function AppPage() {
   }, [sendMicEnd, sendMicOpus, setVoiceSink, opusBitrate])
 
   useEffect(() => {
-    if (status !== 'connected') {
+    if (status === 'connected') {
+      voiceRef.current?.enableAudio()
+    } else {
       voiceRef.current?.disableMic()
       setMicEnabled(false)
     }
@@ -479,16 +481,17 @@ export default function AppPage() {
           {/* Left: Audio Toggle */}
           <div className="flex items-center gap-3">
             <Button
-              variant={audioReady ? "secondary" : "default"}
+              variant={muted ? "destructive" : "secondary"}
               size="sm"
-              className={cn("w-32 transition-all", !audioReady && "animate-pulse")}
-              onClick={async () => {
-                await voiceRef.current?.enableAudio()
-                setAudioReady(Boolean(voiceRef.current?.audioReady))
+              className="w-32 transition-all"
+              onClick={() => {
+                const newMuted = !muted
+                setMuted(newMuted)
+                voiceRef.current?.setMuted(newMuted)
               }}
             >
-              <Headphones className="mr-2 h-4 w-4" />
-              {audioReady ? 'Audio On' : 'Enable Audio'}
+              {muted ? <VolumeX className="mr-2 h-4 w-4" /> : <Volume2 className="mr-2 h-4 w-4" />}
+              {muted ? 'Muted' : 'Unmuted'}
             </Button>
 
             <div className="h-8 w-[1px] bg-border" />
@@ -496,7 +499,7 @@ export default function AppPage() {
             <Button
               variant={micEnabled ? (captureStats?.sending ? "destructive" : "secondary") : "outline"}
               size="icon"
-              disabled={!audioReady || status !== 'connected' || !webCodecsAvailable}
+              disabled={status !== 'connected' || !webCodecsAvailable}
               className={cn("rounded-full h-10 w-10", micEnabled && captureStats?.sending && "animate-pulse bg-red-500/20 text-red-500 hover:bg-red-500/30 border-red-500/50")}
               onClick={async () => {
                 if (micEnabled) {

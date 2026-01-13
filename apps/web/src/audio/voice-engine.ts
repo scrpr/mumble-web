@@ -19,8 +19,10 @@ export class VoiceEngine {
 
   private _audioContext: AudioContext | null = null
   private _playbackNode: AudioWorkletNode | null = null
+  private _playbackGain: GainNode | null = null
   private _captureNode: AudioWorkletNode | null = null
   private _captureGain: GainNode | null = null
+  private _muted = false
 
   private _micStream: MediaStream | null = null
   private _micSource: MediaStreamAudioSourceNode | null = null
@@ -42,6 +44,17 @@ export class VoiceEngine {
     return this._micEnabled
   }
 
+  get muted() {
+    return this._muted
+  }
+
+  setMuted(muted: boolean) {
+    this._muted = muted
+    if (this._playbackGain) {
+      this._playbackGain.gain.value = muted ? 0 : 1
+    }
+  }
+
   async enableAudio(): Promise<void> {
     if (this._audioContext && this._playbackNode) {
       await this._audioContext.resume()
@@ -57,7 +70,11 @@ export class VoiceEngine {
       numberOfOutputs: 1,
       outputChannelCount: [2]
     })
-    playback.connect(ctx.destination)
+
+    const playbackGain = ctx.createGain()
+    playbackGain.gain.value = this._muted ? 0 : 1
+    playback.connect(playbackGain).connect(ctx.destination)
+
     playback.port.onmessage = (event) => {
       const msg = event.data
       if (!msg || msg.type !== 'stats') return
@@ -70,6 +87,7 @@ export class VoiceEngine {
 
     this._audioContext = ctx
     this._playbackNode = playback
+    this._playbackGain = playbackGain
 
     if (ctx.sampleRate !== 48000) {
       // Keep working, but current implementation assumes 48kHz for both playback and uplink.

@@ -38,13 +38,13 @@ export default function AppPage() {
     sendMicEnd,
     voiceMode,
     vadThreshold,
+    vadHoldTimeMs,
     opusBitrate,
     micEchoCancellation,
     micNoiseSuppression,
     micAutoGainControl,
     rnnoiseEnabled,
-    setVoiceMode,
-    setVadThreshold
+    setVoiceMode
   } = useGatewayStore()
 
   const webCodecsAvailable = canUseWebCodecsOpus()
@@ -167,6 +167,7 @@ export default function AppPage() {
     // Sync initial settings
     engine.setMode(voiceMode)
     engine.setVadThreshold(vadThreshold)
+    engine.setVadHoldTime(vadHoldTimeMs)
 
     setVoiceSink((frame) => {
       if (!canUseWebCodecsOpus()) return
@@ -215,6 +216,10 @@ export default function AppPage() {
   useEffect(() => {
     voiceRef.current?.setVadThreshold(vadThreshold)
   }, [vadThreshold])
+
+  useEffect(() => {
+    voiceRef.current?.setVadHoldTime(vadHoldTimeMs)
+  }, [vadHoldTimeMs])
 
   const root = rootChannelId != null ? channelsById[rootChannelId] : undefined
 
@@ -542,18 +547,7 @@ export default function AppPage() {
                   </div>
                 </div>
 
-                {voiceMode === 'vad' ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-medium uppercase text-muted-foreground w-8">Sens</span>
-                    <input
-                      type="range"
-                      min={0.005} max={0.08} step={0.001}
-                      value={vadThreshold}
-                      onChange={(e) => setVadThreshold(Number(e.target.value))}
-                      className="w-24 h-1.5 accent-primary bg-accent rounded-full appearance-none cursor-pointer"
-                    />
-                  </div>
-                ) : (
+                {voiceMode === 'ptt' && (
                   <Button
                     size="sm"
                     className="h-6 text-xs w-full"

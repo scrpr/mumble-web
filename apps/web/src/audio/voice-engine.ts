@@ -31,6 +31,7 @@ export class VoiceEngine {
   private _mode: 'vad' | 'ptt' = 'vad'
   private _pttActive = false
   private _vadThreshold = 0.02
+  private _vadHoldTimeMs = 200
 
   constructor(config: VoiceEngineConfig) {
     this._config = config
@@ -126,6 +127,11 @@ export class VoiceEngine {
     this._postCaptureConfig()
   }
 
+  setVadHoldTime(ms: number) {
+    this._vadHoldTimeMs = ms
+    this._postCaptureConfig()
+  }
+
   setPttActive(active: boolean) {
     this._pttActive = active
     this._postCaptureConfig()
@@ -133,6 +139,7 @@ export class VoiceEngine {
 
   private _postCaptureConfig() {
     if (!this._captureNode) return
+    const hangoverFrames = Math.round(this._vadHoldTimeMs / 20)
     this._captureNode.port.postMessage({
       type: 'config',
       enabled: this._micEnabled,
@@ -140,7 +147,7 @@ export class VoiceEngine {
       pttActive: this._pttActive,
       vadThreshold: this._vadThreshold,
       frameSize: 960,
-      hangoverFrames: 5
+      hangoverFrames
     })
   }
 

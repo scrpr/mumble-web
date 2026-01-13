@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from './card'
 import { Input } from './input'
 import { useGatewayStore } from '../../src/state/gateway-store'
-import { Mic, Shield, Wifi } from 'lucide-react'
+import { Mic, Shield, Wifi, AudioWaveform } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './dialog'
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -20,6 +20,10 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const {
+    vadThreshold,
+    setVadThreshold,
+    vadHoldTimeMs,
+    setVadHoldTimeMs,
     opusBitrate,
     setOpusBitrate,
     uplinkCongestionControlEnabled,
@@ -46,6 +50,54 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </DialogHeader>
 
         <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <AudioWaveform className="h-4 w-4 text-primary" />
+                Voice Activation (VAD)
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">灵敏度</div>
+                    <div className="text-xs text-muted-foreground">值越小越灵敏，环境噪声大时可调高。</div>
+                  </div>
+                  <div className="text-sm font-mono">{(vadThreshold * 100).toFixed(1)}%</div>
+                </div>
+                <input
+                  type="range"
+                  min={0.005}
+                  max={0.08}
+                  step={0.001}
+                  value={vadThreshold}
+                  onChange={(e) => setVadThreshold(clampNumber(Number(e.target.value), 0.005, 0.08))}
+                  className="w-full h-2 accent-primary bg-accent rounded-full appearance-none cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">保持时间</div>
+                    <div className="text-xs text-muted-foreground">声音消失后继续发送的时长，避免词语间断。</div>
+                  </div>
+                  <div className="text-sm font-mono">{vadHoldTimeMs} ms</div>
+                </div>
+                <input
+                  type="range"
+                  min={100}
+                  max={1000}
+                  step={50}
+                  value={vadHoldTimeMs}
+                  onChange={(e) => setVadHoldTimeMs(clampNumber(Number(e.target.value), 100, 1000))}
+                  className="w-full h-2 accent-primary bg-accent rounded-full appearance-none cursor-pointer"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-sm">

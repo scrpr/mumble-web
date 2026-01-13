@@ -82,6 +82,7 @@ type GatewayStore = {
   // Audio settings (persisted)
   voiceMode: VoiceMode
   vadThreshold: number
+  vadHoldTimeMs: number
   opusBitrate: number
   uplinkCongestionControlEnabled: boolean
   uplinkMaxBufferedAmountBytes: number
@@ -114,6 +115,7 @@ type GatewayStore = {
   sendTextToSelectedChannel: (message: string) => void
   setVoiceMode: (mode: VoiceMode) => void
   setVadThreshold: (val: number) => void
+  setVadHoldTimeMs: (val: number) => void
   setOpusBitrate: (bitrate: number) => void
   setUplinkCongestionControlEnabled: (enabled: boolean) => void
   setUplinkMaxBufferedAmountBytes: (bytes: number) => void
@@ -244,6 +246,7 @@ export const useGatewayStore = create<GatewayStore>()(
 
       voiceMode: 'vad',
       vadThreshold: 0.02,
+      vadHoldTimeMs: 200,
       opusBitrate: 24000,
       uplinkCongestionControlEnabled: true,
       uplinkMaxBufferedAmountBytes: 256 * 1024,
@@ -830,6 +833,7 @@ export const useGatewayStore = create<GatewayStore>()(
 
       setVoiceMode: (mode) => set({ voiceMode: mode }),
       setVadThreshold: (val) => set({ vadThreshold: val }),
+      setVadHoldTimeMs: (val) => set({ vadHoldTimeMs: val }),
       setOpusBitrate: (bitrate) => set({ opusBitrate: bitrate }),
       setUplinkCongestionControlEnabled: (enabled) => set({ uplinkCongestionControlEnabled: enabled }),
       setUplinkMaxBufferedAmountBytes: (bytes) => set({ uplinkMaxBufferedAmountBytes: bytes }),
@@ -847,6 +851,7 @@ export const useGatewayStore = create<GatewayStore>()(
         _lastConnectArgs: state._lastConnectArgs,
         voiceMode: state.voiceMode,
         vadThreshold: state.vadThreshold,
+        vadHoldTimeMs: state.vadHoldTimeMs,
         opusBitrate: state.opusBitrate,
         uplinkCongestionControlEnabled: state.uplinkCongestionControlEnabled,
         uplinkMaxBufferedAmountBytes: state.uplinkMaxBufferedAmountBytes,

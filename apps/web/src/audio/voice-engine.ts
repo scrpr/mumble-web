@@ -151,21 +151,24 @@ export class VoiceEngine {
     })
   }
 
-  async enableMic(options?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean }): Promise<void> {
+  async enableMic(options?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean; deviceId?: string }): Promise<void> {
     if (this._micEnabled) return
     await this.enableAudio()
 
     const ctx = this._audioContext
     if (!ctx) return
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: options?.echoCancellation ?? true,
-        noiseSuppression: options?.noiseSuppression ?? true,
-        autoGainControl: options?.autoGainControl ?? true,
-        channelCount: 1
-      }
-    })
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: options?.echoCancellation ?? true,
+      noiseSuppression: options?.noiseSuppression ?? true,
+      autoGainControl: options?.autoGainControl ?? true,
+      channelCount: 1
+    }
+    if (options?.deviceId) {
+      audioConstraints.deviceId = { exact: options.deviceId }
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
 
     const source = ctx.createMediaStreamSource(stream)
     const capture = new AudioWorkletNode(ctx, 'mumble-capture', {
@@ -241,5 +244,11 @@ export class VoiceEngine {
       }
       this._micStream = null
     }
+  }
+
+  async switchDevice(options: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean; deviceId?: string }): Promise<void> {
+    if (!this._micEnabled) return
+    this.disableMic()
+    await this.enableMic(options)
   }
 }

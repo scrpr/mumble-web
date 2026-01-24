@@ -92,6 +92,7 @@ type GatewayStore = {
   micNoiseSuppression: boolean
   micAutoGainControl: boolean
   rnnoiseEnabled: boolean
+  selectedInputDeviceId: string | null
 
   _ws: WebSocket | null
   _pingInterval: number | null
@@ -123,6 +124,7 @@ type GatewayStore = {
   setMicNoiseSuppression: (val: boolean) => void
   setMicAutoGainControl: (val: boolean) => void
   setRnnoiseEnabled: (val: boolean) => void
+  setSelectedInputDeviceId: (deviceId: string | null) => void
 }
 
 function getGatewayUrl(): string {
@@ -255,6 +257,7 @@ export const useGatewayStore = create<GatewayStore>()(
       micNoiseSuppression: true,
       micAutoGainControl: true,
       rnnoiseEnabled: false,
+      selectedInputDeviceId: null,
 
       _ws: null,
       _pingInterval: null,
@@ -841,6 +844,7 @@ export const useGatewayStore = create<GatewayStore>()(
       setMicNoiseSuppression: (val) => set({ micNoiseSuppression: val }),
       setMicAutoGainControl: (val) => set({ micAutoGainControl: val }),
       setRnnoiseEnabled: (val) => set({ rnnoiseEnabled: val }),
+      setSelectedInputDeviceId: (deviceId) => set({ selectedInputDeviceId: deviceId }),
     }
     },
     {
@@ -859,6 +863,7 @@ export const useGatewayStore = create<GatewayStore>()(
         micNoiseSuppression: state.micNoiseSuppression,
         micAutoGainControl: state.micAutoGainControl,
         rnnoiseEnabled: state.rnnoiseEnabled,
+        selectedInputDeviceId: state.selectedInputDeviceId,
       }),
     }
   )

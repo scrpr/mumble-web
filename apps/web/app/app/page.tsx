@@ -44,7 +44,8 @@ export default function AppPage() {
     micNoiseSuppression,
     micAutoGainControl,
     rnnoiseEnabled,
-    setVoiceMode
+    setVoiceMode,
+    selectedInputDeviceId
   } = useGatewayStore()
 
   const webCodecsAvailable = canUseWebCodecsOpus()
@@ -220,6 +221,18 @@ export default function AppPage() {
   useEffect(() => {
     voiceRef.current?.setVadHoldTime(vadHoldTimeMs)
   }, [vadHoldTimeMs])
+
+  useEffect(() => {
+    if (!micEnabled) return
+    voiceRef.current?.switchDevice({
+      echoCancellation: micEchoCancellation,
+      noiseSuppression: micNoiseSuppression,
+      autoGainControl: micAutoGainControl,
+      deviceId: selectedInputDeviceId ?? undefined
+    }).catch((e) => {
+      console.warn(`[voice] failed to switch device: ${e}`)
+    })
+  }, [selectedInputDeviceId])
 
   const root = rootChannelId != null ? channelsById[rootChannelId] : undefined
 
@@ -515,7 +528,8 @@ export default function AppPage() {
                     await voiceRef.current?.enableMic({
                       echoCancellation: micEchoCancellation,
                       noiseSuppression: micNoiseSuppression,
-                      autoGainControl: micAutoGainControl
+                      autoGainControl: micAutoGainControl,
+                      deviceId: selectedInputDeviceId ?? undefined
                     })
                     setMicEnabled(true)
                   } catch (e) {

@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './card'
 import { Input } from './input'
 import { useGatewayStore } from '../../src/state/gateway-store'
@@ -38,7 +39,31 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setMicAutoGainControl,
     rnnoiseEnabled,
     setRnnoiseEnabled,
+    selectedInputDeviceId,
+    setSelectedInputDeviceId,
   } = useGatewayStore()
+
+  const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+
+    const loadDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        if (cancelled) return
+        setAudioInputDevices(devices.filter((d) => d.kind === 'audioinput'))
+      } catch {}
+    }
+
+    loadDevices()
+    navigator.mediaDevices.addEventListener('devicechange', loadDevices)
+    return () => {
+      cancelled = true
+      navigator.mediaDevices.removeEventListener('devicechange', loadDevices)
+    }
+  }, [open])
 
   const uplinkMaxBufferedKb = Math.round(uplinkMaxBufferedAmountBytes / 1024)
 
@@ -167,6 +192,32 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   onChange={(e) => setOpusBitrate(clampNumber(Number(e.target.value), 12000, 48000))}
                   className="w-full h-2 accent-primary bg-accent rounded-full appearance-none cursor-pointer"
                 />
+              </div>
+
+              <div className="h-px bg-border" />
+
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Mic className="h-4 w-4 text-primary" />
+                  输入设备
+                </div>
+                <select
+                  className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+                  value={selectedInputDeviceId ?? ''}
+                  onChange={(e) => setSelectedInputDeviceId(e.target.value || null)}
+                >
+                  <option value="">默认设备</option>
+                  {audioInputDevices.map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label || `麦克风 (${d.deviceId.slice(0, 8)}...)`}
+                    </option>
+                  ))}
+                </select>
+                {audioInputDevices.length === 0 && (
+                  <div className="text-xs text-muted-foreground">
+                    未检测到设备，请先授权麦克风权限。
+                  </div>
+                )}
               </div>
 
               <div className="h-px bg-border" />

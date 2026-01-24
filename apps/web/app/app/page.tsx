@@ -224,15 +224,18 @@ export default function AppPage() {
 
   useEffect(() => {
     if (!micEnabled) return
-    voiceRef.current?.switchDevice({
+    const options: Parameters<VoiceEngine['switchDevice']>[0] = {
       echoCancellation: micEchoCancellation,
       noiseSuppression: micNoiseSuppression,
-      autoGainControl: micAutoGainControl,
-      deviceId: selectedInputDeviceId ?? undefined
-    }).catch((e) => {
+      autoGainControl: micAutoGainControl
+    }
+    // With `exactOptionalPropertyTypes`, omit optional keys instead of passing `undefined`.
+    if (selectedInputDeviceId != null) options.deviceId = selectedInputDeviceId
+
+    voiceRef.current?.switchDevice(options).catch((e) => {
       console.warn(`[voice] failed to switch device: ${e}`)
     })
-  }, [selectedInputDeviceId])
+  }, [micEnabled, micEchoCancellation, micNoiseSuppression, micAutoGainControl, selectedInputDeviceId])
 
   const root = rootChannelId != null ? channelsById[rootChannelId] : undefined
 
@@ -525,12 +528,15 @@ export default function AppPage() {
                   setMicEnabled(false)
                 } else {
                   try {
-                    await voiceRef.current?.enableMic({
+                    const options: Parameters<VoiceEngine['enableMic']>[0] = {
                       echoCancellation: micEchoCancellation,
                       noiseSuppression: micNoiseSuppression,
-                      autoGainControl: micAutoGainControl,
-                      deviceId: selectedInputDeviceId ?? undefined
-                    })
+                      autoGainControl: micAutoGainControl
+                    }
+                    // With `exactOptionalPropertyTypes`, omit optional keys instead of passing `undefined`.
+                    if (selectedInputDeviceId != null) options.deviceId = selectedInputDeviceId
+
+                    await voiceRef.current?.enableMic(options)
                     setMicEnabled(true)
                   } catch (e) {
                     alert(`Failed to access microphone: ${e}`)
